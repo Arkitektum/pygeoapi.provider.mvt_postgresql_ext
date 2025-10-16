@@ -35,10 +35,9 @@ class MVTPostgreSQLExtendedProvider(MVTPostgreSQLProvider):
         if not self.is_in_limits(tileset_schema, z, x, y):
             return bytes()
 
-        layer = layer or self.get_layer()
-        tile_path = f'{tileset}/{z}/{y}/{x}.pbf'
+        tile_path = str(Path(self._get_instance_path()).joinpath(f'{tileset}/{z}/{y}/{x}.pbf'))
 
-        result = _get_tiles(layer, tileset_schema.tileMatrixSet, z, y, x, self.storage_crs, tileset_schema.crs, self._engine,
+        result = _get_tiles(str(layer), tileset_schema.tileMatrixSet, z, y, x, self.storage_crs, tileset_schema.crs, self._engine,
                             self.table_model, self.geom, self.fields, self.get_envelope, tile_path, self._cache_options)
 
         return result
@@ -49,12 +48,14 @@ class MVTPostgreSQLExtendedProvider(MVTPostgreSQLProvider):
             return
 
         base_path: str = cache_options['path']
-        instance_path = f'{self.db_name}/{self.db_search_path[0]}/{self.table}'
 
         self._cache_options = {
-            'base_path': Path(base_path).joinpath(instance_path),
+            'base_path': Path(base_path),
             'max_age_days': cache_options.get('max_age_days', 7)
         }
+
+    def _get_instance_path(self) -> str:
+        return f'{self.db_name}/{self.db_search_path[0]}/{self.table}'
 
     def __repr__(self):
         return f'<MVTPostgreSQLExtendedProvider> {self.data}'
@@ -96,7 +97,7 @@ def _get_tiles(
     geom_column = getattr(table_model, geom)
 
     geom_filter = geom_column.intersects(
-        ST_Transform(envelope, storage_srid) # type: ignore
+        ST_Transform(envelope, storage_srid)  # type: ignore
     )
 
     mvtgeom = (
