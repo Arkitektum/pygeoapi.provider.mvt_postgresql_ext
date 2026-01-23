@@ -7,7 +7,7 @@ from geoalchemy2.functions import ST_Transform, ST_AsMVTGeom, ST_AsMVT, ST_Curve
 from sqlalchemy import Engine, Label
 from sqlalchemy.sql import select
 from sqlalchemy.orm import Session
-from pygeoapi.util import get_crs_from_uri
+from pygeoapi.crs import get_crs
 from pygeoapi.provider.mvt_postgresql import MVTPostgreSQLProvider
 
 LOGGER = logging.getLogger(__name__)
@@ -90,8 +90,8 @@ def _get_tiles(
             with open(tile_cache_path, 'rb') as file:
                 return file.read()
 
-    storage_srid = get_crs_from_uri(storage_crs).to_string()
-    out_srid = get_crs_from_uri(tileset_schema_crs).to_string()
+    storage_srid = get_crs(storage_crs).to_string()
+    out_srid = get_crs(tileset_schema_crs).to_string()
     envelope = get_envelope_func(z, y, x, tileset)
 
     geom_column = getattr(table_model, geom)

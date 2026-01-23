@@ -1,14 +1,14 @@
 [project]
 name = "mvt_postgresql_ext"
 description = "Extended MVT PostgreSQL provider for pygeoapi"
-version = "0.1.0"
+version = "1.0.0"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
-    "pygeoapi",
+    "pygeoapi>=0.22.0",
     "SQLAlchemy>2.0",
     "geoalchemy2",
-    "cachetools"
+    "cachetools",
 ]
 
 [build-system]
