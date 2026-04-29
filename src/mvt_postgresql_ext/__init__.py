@@ -1,7 +1,7 @@
 import logging
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Callable
+from typing import Any, Dict, Callable
 from cachetools import cached, TTLCache, keys
 from geoalchemy2.functions import ST_Transform, ST_AsMVTGeom, ST_AsMVT, ST_CurveToLine
 from sqlalchemy import Engine, Label
@@ -61,12 +61,16 @@ class MVTPostgreSQLExtendedProvider(MVTPostgreSQLProvider):
 
         return result
 
-    def _setup_caching(self, cache_options: Optional[Dict[str, Any]]) -> None:
+    def _setup_caching(self, cache_options: Dict[str, Any] | None) -> None:
         if not cache_options:
             self._cache_options = None
             return
 
-        base_path: str = cache_options["path"]
+        base_path: str | None = cache_options.get("path")
+
+        if not base_path:
+            self._cache_options = None
+            return
 
         self._cache_options = {
             "base_path": Path(base_path),
@@ -114,7 +118,7 @@ def _get_tiles(
     fields: Dict,
     get_envelope_func: Callable[[int, int, int, str], Label],
     tile_path: str,
-    cache_options: Optional[Dict[str, Any]] = None,
+    cache_options: Dict[str, Any] | None = None,
 ) -> bytes:
     if cache_options:
         base_path: Path = cache_options["base_path"]
