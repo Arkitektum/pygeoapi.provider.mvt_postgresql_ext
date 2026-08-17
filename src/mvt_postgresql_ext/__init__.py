@@ -1,17 +1,30 @@
 import logging
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Any, Dict, Callable
+from os import getenv
+from typing import Any, Callable, Dict, List, Optional
 from cachetools import cached, TTLCache, keys
-from geoalchemy2.functions import ST_Transform, ST_AsMVTGeom, ST_AsMVT, ST_CurveToLine
-from sqlalchemy import Engine, Label
+from geoalchemy2.functions import (ST_Transform, ST_AsMVTGeom, ST_AsMVT,
+                                   ST_CurveToLine, ST_Extent, ST_XMax, ST_YMax, ST_XMin, ST_YMin, ST_SetSRID)
+from sqlalchemy import (Engine, Label, String, Integer,
+                        Float, Boolean, Numeric, Date, DateTime)
+from sqlalchemy.dialects.postgresql import UUID, JSON, JSONB
 from sqlalchemy.sql import select
 from sqlalchemy.orm import Session
+from pygeoapi.util import url_join
 from pygeoapi.crs import get_crs
+from pygeoapi.models.provider.base import TileMatrixSetEnum
 from pygeoapi.provider.mvt_postgresql import MVTPostgreSQLProvider
 
-LOGGER = logging.getLogger(__name__)
-_MEM_CACHE_DAYS = 1
+import json
+
+_MEM_CACHE_DAYS = getenv('MVT_CACHE_DAYS')
+
+_logger = logging.getLogger(__name__)
+
+_mem_cache_days = int(_MEM_CACHE_DAYS) if _MEM_CACHE_DAYS else 1
+_mvt_cache = TTLCache(maxsize=640 * 1024, ttl=_mem_cache_days * 86400)
+_bounds_cache = TTLCache(maxsize=1, ttl=_mem_cache_days * 86400)
 
 
 class MVTPostgreSQLExtendedProvider(MVTPostgreSQLProvider):
@@ -19,7 +32,6 @@ class MVTPostgreSQLExtendedProvider(MVTPostgreSQLProvider):
         MVTPostgreSQLProvider.__init__(self, provider_def)
 
         self._layer: str = provider_def.get("layer", self.table)
-        self._setup_caching(provider_def.get("cache"))
 
     def get_layer(self) -> str:
         return self._layer
@@ -39,7 +51,8 @@ class MVTPostgreSQLExtendedProvider(MVTPostgreSQLProvider):
             return bytes()
 
         tile_path = str(
-            Path(self._get_instance_path()).joinpath(f"{tileset}/{z}/{y}/{x}.pbf")
+            Path(self._get_instance_path()).joinpath(
+                f"{tileset}/{z}/{y}/{x}.pbf")
         )
 
         result = _get_tiles(
@@ -55,40 +68,85 @@ class MVTPostgreSQLExtendedProvider(MVTPostgreSQLProvider):
             self.geom,
             self.fields,
             self.get_envelope,
-            tile_path,
-            self._cache_options,
+            tile_path
         )
 
         return result
+    
+    def get_tiling_schemes(self):
+        return [member.value for member in TileMatrixSetEnum]
 
-    def _setup_caching(self, cache_options: Dict[str, Any] | None) -> None:
-        if not cache_options:
-            self._cache_options = None
-            return
 
-        base_path: str | None = cache_options.get("path")
 
-        if not base_path:
-            self._cache_options = None
-            return
+    def get_vendor_metadata(
+            self, dataset, server_url, layer, tileset,
+            title, description, keywords, **kwargs):                
 
-        self._cache_options = {
-            "base_path": Path(base_path),
-            "max_age_days": cache_options.get("max_age_days", 7),
+        service_url = url_join(
+            server_url,
+            f"collections/{dataset}/tiles/{tileset}",
+            "{tileMatrix}/{tileRow}/{tileCol}?f=mvt"
+        )
+
+        tilejson = {
+            "tilejson": "3.0.0",
+            "name": title or dataset,
+            "description": description,
+            "version": "1.0.0",
+            "scheme": "tms",
+            "tiles": [service_url],
+            "minzoom": self.options["zoom"]["min"],
+            "maxzoom": self.options["zoom"]["max"],
         }
+
+        bounds = _get_bounds(self._engine, self.table_model,
+                             self.geom, self._get_instance_path())
+
+        if bounds:
+            tilejson["bounds"] = bounds
+
+            tilejson["center"] = [
+                (bounds[0] + bounds[2]) / 2,
+                (bounds[1] + bounds[3]) / 2,
+                self.options["zoom"]["min"]
+            ]
+
+        tilejson["vector_layers"] = [
+            {
+                "id": layer,
+                "description": description,
+                "fields": {
+                    name: self._map_field_type(column.type)
+                    for name, column in self.get_fields().items()
+                }
+            }
+        ]
+
+        return tilejson
+
+    def _map_field_type(self, field_type) -> str:
+        if isinstance(field_type, (String)):
+            return "String"
+        elif isinstance(field_type, (Integer, Float, Numeric)):
+            return "Number"
+        elif isinstance(field_type, Boolean):
+            return "Boolean"
+        elif isinstance(field_type, (Date, DateTime)):
+            return "String"
+        elif isinstance(field_type, (UUID, JSON, JSONB)):
+            return "String"
+
+        return "String"
 
     def _get_instance_path(self) -> str:
         return f"{self.db_name}/{self.db_search_path[0]}/{self.table}"
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"<MVTPostgreSQLExtendedProvider> {self.data}"
 
 
-_mem_cache = TTLCache(maxsize=640 * 1024, ttl=_MEM_CACHE_DAYS * 86400)
-
-
 @cached(
-    cache=_mem_cache,
+    cache=_mvt_cache,
     key=lambda layer,
     tileset,
     z,
@@ -101,8 +159,7 @@ _mem_cache = TTLCache(maxsize=640 * 1024, ttl=_MEM_CACHE_DAYS * 86400)
     geom,
     fields,
     get_envelope_func,
-    tile_path,
-    cache_options: keys.hashkey(tile_path),
+    tile_path: keys.hashkey(tile_path),
 )
 def _get_tiles(
     layer: str,
@@ -118,21 +175,13 @@ def _get_tiles(
     fields: Dict,
     get_envelope_func: Callable[[int, int, int, str], Label],
     tile_path: str,
-    cache_options: Dict[str, Any] | None = None,
+    cache_options: Optional[Dict[str, Any]] = None,
 ) -> bytes:
-    if cache_options:
-        base_path: Path = cache_options["base_path"]
-        tile_cache_path = base_path.joinpath(tile_path)
-        max_age = cache_options["max_age_days"]
-
-        if tile_cache_path.exists() and not _should_refresh_cache(
-            tile_cache_path, max_age
-        ):
-            with open(tile_cache_path, "rb") as file:
-                return file.read()
-
     storage_srid = get_crs(storage_crs).to_string()
     out_srid = get_crs(tileset_schema_crs).to_string()
+    print(storage_srid)
+    print(out_srid)
+    
     envelope = get_envelope_func(z, y, x, tileset)
 
     geom_column = getattr(table_model, geom)
@@ -146,7 +195,8 @@ def _get_tiles(
         ST_Transform(envelope, out_srid),
     ).label("mvtgeom")
 
-    mvtrow = select(mvtgeom, *fields.values()).filter(geom_filter).cte("mvtrow")
+    mvtrow = select(mvtgeom, *fields.values()
+                    ).filter(geom_filter).cte("mvtrow")
 
     mvtquery = select(ST_AsMVT(mvtrow.table_valued(), layer))
 
@@ -154,20 +204,36 @@ def _get_tiles(
         memview: Any = session.execute(mvtquery).scalar()
         result = bytes(memview) or None
 
-    if result and cache_options:
-        base_path: Path = cache_options["base_path"]
-        tile_cache_path = base_path.joinpath(tile_path)
-        tile_cache_path.parent.mkdir(parents=True, exist_ok=True)
-
-        with open(tile_cache_path, "wb") as file:
-            file.write(result)
-
     return result or bytes()
 
 
-def _should_refresh_cache(file_path: Path, cache_days: int) -> bool:
-    timestamp = file_path.stat().st_mtime
-    modified = datetime.fromtimestamp(timestamp, tz=timezone.utc)
-    diff = datetime.now(tz=timezone.utc) - modified
+@cached(
+    cache=_bounds_cache,
+    key=lambda engine,
+    table_model,
+    cache_key,
+    cache_options: keys.hashkey(cache_key),
+)
+def _get_bounds(
+    engine: Engine,
+    table_model: Any,
+    geom: Any,
+    cache_key: str
+) -> List[float] | None:
+    geom_column = getattr(table_model, geom)
+    extent = ST_SetSRID(ST_Extent(ST_Transform(geom_column, 4326)), 4326)
 
-    return diff.days > cache_days
+    stmt = select(
+        ST_XMin(extent),
+        ST_YMin(extent),
+        ST_XMax(extent),
+        ST_YMax(extent)
+    )
+
+    with Session(engine) as session:
+        row = session.execute(stmt).first()
+
+    if not row or row[0] is None:
+        return None
+
+    return [row[0], row[1], row[2], row[3]]
