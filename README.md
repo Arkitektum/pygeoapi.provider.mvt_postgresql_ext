@@ -1,4 +1,4 @@
-# mvt_postgresql_dibk
+# MVT PostgreSQL Extended Provider
 
 A custom [pygeoapi](https://pygeoapi.io/) tile provider that extends the built-in
 `MVT-postgresql` provider with **tile caching** and **TileJSON metadata**.
