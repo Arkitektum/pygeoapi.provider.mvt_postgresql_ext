@@ -1,11 +1,11 @@
 [project]
-name = "mvt_postgresql_ext"
-description = "Extended MVT PostgreSQL provider for pygeoapi"
+name = "mvt_postgresql_dibk"
+description = "Custom MVT PostgreSQL provider for pygeoapi"
 version = "1.0.0"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "pygeoapi>=0.22.0",
+    "pygeoapi>=0.24.0",
     "SQLAlchemy>2.0",
     "geoalchemy2",
     "cachetools",
